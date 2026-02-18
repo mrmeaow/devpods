@@ -1,0 +1,62 @@
+# ── devpods .gitignore ────────────────────────────────────────────────────────
+
+# Local data volumes (lives in ~/.devpods/ anyway, but just in case)
+.data/
+data/
+
+# Local credential overrides
+.env
+*.env
+!env.example
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*.suo
+*.iml
+*.code-workspace
+.project
+.classpath
+.settings/
+
+# Vim
+[._]*.s[a-v][a-z]
+[._]*.sw[a-p]
+Session.vim
+.netrwhist
+tags
+
+# Logs
+*.log
+logs/
+
+# OS temp
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# Shell test artifacts
+/tmp/
