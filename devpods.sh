@@ -51,7 +51,7 @@ DATA_ROOT="${HOME}/.devpods"
 declare -A POD_PORTS=(
   [dev-pg-pod]="5432:5432 8081:8081"
   [dev-mongo-pod]="27017:27017 8082:8081"
-  [dev-redis-pod]="6379:6379 8083:8081"
+  [dev-redis-pod]="6379:6379 8083:5540"
   [dev-mail-pod]="1025:1025 8025:8025"
   [dev-seq-pod]="5341:80"
   [dev-rmq-pod]="5672:5672 15672:15672"
@@ -453,12 +453,14 @@ _up_redis() {
   local pod="dev-redis-pod"
   local data="${DATA_ROOT}/${pod}"
   mkdir -p "${data}/redis" "${data}/redisinsight"
+  # RedisInsight v2+ needs write access to /data/
+  chmod 777 "${data}/redisinsight"
 
   _preflight_images "${pod}" \
     "docker.io/library/redis:7-alpine" \
     "docker.io/redis/redisinsight:latest"
 
-  _ensure_pod "${pod}" "6379:6379" "8083:8001"
+  _ensure_pod "${pod}" "6379:6379" "8083:5540"
 
   # Redis
   if ! podman container exists "${pod}-redis" 2>/dev/null; then
@@ -515,6 +517,7 @@ _up_seq() {
   local pod="dev-seq-pod"
   local data="${DATA_ROOT}/${pod}"
   mkdir -p "${data}/seq"
+  chmod 777 "${data}/seq"
 
   _preflight_images "${pod}" "docker.io/datalust/seq:latest"
 
@@ -526,6 +529,7 @@ _up_seq() {
       --pod "${pod}" \
       --name "${pod}-seq" \
       -e ACCEPT_EULA=Y \
+      -e SEQ_FIRSTRUN_NOAUTHENTICATION=true \
       -v "${data}/seq:/data:Z" \
       docker.io/datalust/seq:latest >/dev/null
     ok "Seq started → http://localhost:5341"

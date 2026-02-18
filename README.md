@@ -10,15 +10,15 @@ curl -fsSL https://raw.githubusercontent.com/mrmeaow/devpods/main/devpods.sh | b
 
 ## What's included
 
-| Pod             | Services                                | Ports                      |
-| --------------- | --------------------------------------- | -------------------------- |
-| `dev-pg-pod`    | PostgreSQL 16 · pgweb                   | `5432` · UI → `8081`       |
-| `dev-mongo-pod` | MongoDB 7 (Replica Set) · mongo-express | `27017` · UI → `8082`      |
-| `dev-redis-pod` | Redis 7 · RedisInsight                  | `6379` · UI → `8083`       |
-| `dev-mail-pod`  | Mailpit                                 | SMTP `1025` · UI → `8025`  |
-| `dev-seq-pod`   | Seq                                     | Ingest + UI → `5341`       |
-| `dev-rmq-pod`   | RabbitMQ 3 (management)                 | AMQP `5672` · UI → `15672` |
-| `dev-nats-pod`  | NATS 2 + JetStream                      | `4222` · Monitor → `8222`  |
+| Pod             | Services                                | Ports                      | Guide                       |
+| --------------- | --------------------------------------- | -------------------------- | --------------------------- |
+| `dev-pg-pod`    | PostgreSQL 16 · pgweb                   | `5432` · UI → `8081`       | [Guide](./docs/postgres.md) |
+| `dev-mongo-pod` | MongoDB 7 (Replica Set) · mongo-express | `27017` · UI → `8082`      | [Guide](./docs/mongodb.md)  |
+| `dev-redis-pod` | Redis 7 · RedisInsight                  | `6379` · UI → `8083`       | [Guide](./docs/redis.md)    |
+| `dev-mail-pod`  | Mailpit                                 | SMTP `1025` · UI → `8025`  | [Guide](./docs/mailpit.md)  |
+| `dev-seq-pod`   | Seq                                     | Ingest + UI → `5341`       | [Guide](./docs/seq.md)      |
+| `dev-rmq-pod`   | RabbitMQ 3 (management)                 | AMQP `5672` · UI → `15672` | [Guide](./docs/rabbitmq.md) |
+| `dev-nats-pod`  | NATS 2 + JetStream                      | `4222` · Monitor → `8222`  | [Guide](./docs/nats.md)     |
 
 All persistent data lives in **`~/.devpods/<pod-name>/`** — fully isolated from your project.
 
