@@ -1,4 +1,4 @@
-# 🐳 devpods
+# 🦭 DevPods - Instant Local Infrastructure via Podman
 
 > Local dev infrastructure in isolated **Podman pods** — one script, zero Docker Desktop, zero compose files.
 
@@ -10,15 +10,15 @@ curl -fsSL https://raw.githubusercontent.com/mrmeaow/devpods/main/devpods.sh | b
 
 ## What's included
 
-| Pod | Services | Ports |
-|-----|----------|-------|
-| `dev-pg-pod` | PostgreSQL 16 · pgweb | `5432` · UI → `8081` |
-| `dev-mongo-pod` | MongoDB 7 (Replica Set) · mongo-express | `27017` · UI → `8082` |
-| `dev-redis-pod` | Redis 7 · RedisInsight | `6379` · UI → `8083` |
-| `dev-mail-pod` | Mailpit | SMTP `1025` · UI → `8025` |
-| `dev-seq-pod` | Seq | Ingest + UI → `5341` |
-| `dev-rmq-pod` | RabbitMQ 3 (management) | AMQP `5672` · UI → `15672` |
-| `dev-nats-pod` | NATS 2 + JetStream | `4222` · Monitor → `8222` |
+| Pod             | Services                                | Ports                      |
+| --------------- | --------------------------------------- | -------------------------- |
+| `dev-pg-pod`    | PostgreSQL 16 · pgweb                   | `5432` · UI → `8081`       |
+| `dev-mongo-pod` | MongoDB 7 (Replica Set) · mongo-express | `27017` · UI → `8082`      |
+| `dev-redis-pod` | Redis 7 · RedisInsight                  | `6379` · UI → `8083`       |
+| `dev-mail-pod`  | Mailpit                                 | SMTP `1025` · UI → `8025`  |
+| `dev-seq-pod`   | Seq                                     | Ingest + UI → `5341`       |
+| `dev-rmq-pod`   | RabbitMQ 3 (management)                 | AMQP `5672` · UI → `15672` |
+| `dev-nats-pod`  | NATS 2 + JetStream                      | `4222` · Monitor → `8222`  |
 
 All persistent data lives in **`~/.devpods/<pod-name>/`** — fully isolated from your project.
 
@@ -26,11 +26,11 @@ All persistent data lives in **`~/.devpods/<pod-name>/`** — fully isolated fro
 
 ## Requirements
 
-| Requirement | Notes |
-|-------------|-------|
-| [Podman](https://podman.io/docs/installation) ≥ 4.0 | Rootless works great |
-| macOS | Podman machine is auto-initialised if missing |
-| Linux | Rootless systemd socket is auto-started if needed |
+| Requirement                                         | Notes                                             |
+| --------------------------------------------------- | ------------------------------------------------- |
+| [Podman](https://podman.io/docs/installation) ≥ 4.0 | Rootless works great                              |
+| macOS                                               | Podman machine is auto-initialised if missing     |
+| Linux                                               | Rootless systemd socket is auto-started if needed |
 
 No Docker. No Docker Desktop. No `sudo`.
 
@@ -60,13 +60,13 @@ bash devpods.sh up mongo
 bash devpods.sh <command> [pod|all]
 ```
 
-| Command | Description |
-|---------|-------------|
-| `up [pod\|all]` | Start pod(s) — idempotent, safe to re-run |
-| `down [pod\|all]` | Stop and remove pod(s) |
-| `reset [pod\|all]` | Stop pod(s) **and delete all data** |
-| `status` | Show state + endpoints for every pod |
-| `help` | Print usage |
+| Command            | Description                               |
+| ------------------ | ----------------------------------------- |
+| `up [pod\|all]`    | Start pod(s) — idempotent, safe to re-run |
+| `down [pod\|all]`  | Stop and remove pod(s)                    |
+| `reset [pod\|all]` | Stop pod(s) **and delete all data**       |
+| `status`           | Show state + endpoints for every pod      |
+| `help`             | Print usage                               |
 
 ### Pod aliases
 
@@ -156,7 +156,7 @@ export const logger = winston.createLogger({
   level: "debug",
   format: winston.format.combine(
     winston.format.errors({ stack: true }),
-    winston.format.json()
+    winston.format.json(),
   ),
   transports: [
     new winston.transports.Console(),
@@ -196,13 +196,37 @@ podman pod ps
 
 ---
 
-## Self-healing behaviour
+## 🧪 E2E Testing
 
-- **macOS** — detects missing/stopped Podman machine and auto-starts or inits it
-- **Linux** — kicks `podman.socket` user service if the daemon isn't responding
-- **Idempotent `up`** — existing running containers are skipped; stale/stopped pods are removed and recreated
-- **MongoDB RS** — `rs.status()` is checked before `rs.initiate()` so reruns never throw errors
-- **Version guard** — fails fast if Podman < 4.0 is detected
+The project includes a robust E2E test suite built with **Vitest** and **tsx** to validate infrastructure readiness, specifically focusing on MongoDB Replica Set features and ACID transactions.
+
+### Running Tests
+
+Ensure your pods are up, then run:
+
+```bash
+npm install
+npm test
+```
+
+### What's tested?
+
+- **Replica Set Validation**: Ensures Mongo is running in `rs0` mode.
+- **ACID Transactions**: Tests multi-document commits and rollbacks.
+- **Concurrency**: Validates write conflicts and isolation levels.
+- **Schema Resilience**: Tests implicit collection creation inside transactions.
+
+---
+
+## Self-healing & Resilience
+
+The refactored `devpods.sh` includes advanced logic to ensure a smooth developer experience:
+
+- **Pull Resilience**: Detects Docker Hub rate limits and automatically falls back to `mirror.gcr.io` for authenticated/unauthenticated pulls.
+- **macOS Machine Manager**: Automatically initialises and starts Podman machines if they are missing or stopped.
+- **Linux Socket Activation**: Kicks the `podman.socket` service if the daemon is unresponsive.
+- **Intelligent RS Init**: MongoDB replica sets are only initiated if `rs.status()` indicates they aren't already active, making `up` perfectly idempotent.
+- **Preflight Checks**: Validates images and system requirements before touching any containers, preventing partial "dirty" starts.
 
 ---
 
@@ -211,6 +235,7 @@ podman pod ps
 ```
 ~/.devpods/
 ├── .env                    ← credentials (auto-created, never committed)
+├── cheatsheet.txt          ← auto-generated connection summary
 ├── dev-pg-pod/
 │   └── postgres/           ← PostgreSQL data
 ├── dev-mongo-pod/
@@ -234,7 +259,7 @@ PRs welcome. The entire setup is a single self-contained bash script — keep it
 
 1. Fork → branch → edit `devpods.sh`
 2. Validate syntax: `bash -n devpods.sh`
-3. Test on a clean machine or VM
+3. Test using the E2E suite: `npm test`
 4. Open a PR with a description of what pod/behaviour changed
 
 ---

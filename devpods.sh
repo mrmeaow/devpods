@@ -19,7 +19,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # ─── version ─────────────────────────────────────────────────────────────────
-DEVPODS_VERSION="1.0.0"
+DEVPODS_VERSION="1.2.0"
 
 # ─── colour palette ──────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -158,6 +158,9 @@ ME_PASS=admin
 ENV
     ok "Created ${DATA_ROOT}/.env (defaults)"
   fi
+
+  # Registry auth detection — runs once, informs all subsequent pulls
+  _detect_registry_auth
 }
 
 # ─── pod lifecycle helpers ────────────────────────────────────────────────────
@@ -217,6 +220,122 @@ _reset_pod() {
   fi
 }
 
+# ─── registry / mirror resolution ────────────────────────────────────────────
+# Detect whether we are authenticated to docker.io.
+# Sets global DOCKER_AUTHED=1 if logged in, 0 otherwise.
+# Also builds PULL_CANDIDATES: ordered list of registries to try for a given
+# docker.io image — authed hub first, then mirror.gcr.io as silent fallback.
+_detect_registry_auth() {
+  DOCKER_AUTHED=0
+  # podman login --get-login exits 0 and prints username when authed
+  if podman login --get-login docker.io &>/dev/null; then
+    DOCKER_AUTHED=1
+    local hub_user; hub_user="$(podman login --get-login docker.io 2>/dev/null)"
+    ok "Docker Hub: authenticated as ${C_BLD}${hub_user}${C_RST}"
+  else
+    warn "Docker Hub: not authenticated — will use ${C_BLD}mirror.gcr.io${C_RST} as primary"
+    warn "  (run ${C_WHT}podman login docker.io${C_RST} to get higher pull limits)"
+  fi
+}
+
+# Resolve pull candidates for an image.
+# docker.io/library/foo:tag  →  tries mirror first if not authed, hub as fallback
+# Non-docker.io images       →  pulled directly, no mirror
+_pull_candidates() {
+  local image="$1"
+  if [[ "${image}" == docker.io/* ]]; then
+    local suffix="${image#docker.io/}"          # e.g. library/postgres:16-alpine
+    local mirror_ref="mirror.gcr.io/${suffix}"
+    if (( DOCKER_AUTHED )); then
+      echo "${image}"          # authed: hub directly, no mirror needed
+    else
+      echo "${mirror_ref}"     # unauthenticated: mirror first
+      echo "${image}"          # hub as last-resort (may hit rate limit)
+    fi
+  else
+    echo "${image}"            # non-hub image: straight pull
+  fi
+}
+
+# ─── image pull with mirror fallback + retry ──────────────────────────────────
+# Usage: _pull_image <image-ref>
+_pull_image() {
+  local image="$1"
+
+  # Already present locally? Skip entirely — no network, no rate-limit exposure.
+  if podman image exists "${image}" 2>/dev/null; then
+    dim "Image cached: ${image}"
+    return 0
+  fi
+
+  # Build ordered list of refs to attempt
+  local -a candidates
+  mapfile -t candidates < <(_pull_candidates "${image}")
+
+  local final_err=""
+  for ref in "${candidates[@]}"; do
+    local label="${ref}"
+    [[ "${ref}" == mirror.gcr.io/* ]] && label="${ref} (mirror)"
+    info "Pulling ${label} …"
+
+    local pull_out pull_rc
+    pull_out="$(podman pull "${ref}" 2>&1)"; pull_rc=$?
+
+    if (( pull_rc == 0 )); then
+      # If we pulled via mirror, tag it as the canonical name so containers
+      # reference the expected image string without re-downloading.
+      if [[ "${ref}" != "${image}" ]]; then
+        podman tag "${ref}" "${image}" 2>/dev/null || true
+        dim "Tagged mirror pull as ${image}"
+      fi
+      ok "Ready: ${image}"
+      return 0
+    fi
+
+    # Auth/rate-limit hit even on mirror — surface clearly
+    if echo "${pull_out}" | grep -qiE "unauthorized|invalid username|rate limit|toomanyrequests"; then
+      warn "Rate-limited/auth error on ${ref}"
+      final_err="rate-limit"
+    else
+      warn "Pull failed for ${ref}"
+      dim "  ${pull_out}"
+      final_err="network"
+    fi
+  done
+
+  # All candidates exhausted
+  echo ""
+  err "Could not pull ${image} from any source."
+  if [[ "${final_err}" == "rate-limit" ]]; then
+    echo -e "\n  ${C_YLW}You've hit Docker Hub's anonymous pull limit.${C_RST}"
+    echo -e "  ${C_BLD}Fix (pick one):${C_RST}"
+    echo -e "  ${C_GRY}  A) Log in:${C_RST}  ${C_WHT}podman login docker.io${C_RST}  ${C_GRY}(free account, 100 pulls/6h)${C_RST}"
+    echo -e "  ${C_GRY}  B) Wait ~6 hours for the anonymous limit to reset, then re-run.${C_RST}"
+    echo -e "  ${C_GRY}  C) Add a permanent mirror to ~/.config/containers/registries.conf:${C_RST}"
+    echo -e ""
+    echo -e "  ${C_GRY}     unqualified-search-registries = [\"docker.io\"]${C_RST}"
+    echo -e "  ${C_GRY}     [[registry]]${C_RST}"
+    echo -e "  ${C_GRY}     prefix   = \"docker.io\"${C_RST}"
+    echo -e "  ${C_GRY}     location = \"mirror.gcr.io\"${C_RST}"
+    echo ""
+    echo -e "  ${C_GRY}Already-running containers are untouched — just re-run devpods.sh.${C_RST}"
+  fi
+  echo ""
+  die "Aborting."
+}
+
+# Pre-pull every image a pod needs BEFORE touching any containers.
+# Clean failure here means no half-started pods.
+_preflight_images() {
+  local pod="$1"; shift
+  local images=("$@")
+  section "Preflight images for ${pod}"
+  for img in "${images[@]}"; do
+    _pull_image "${img}"
+  done
+  ok "All images ready for ${pod}."
+}
+
 # ─── pod launchers ────────────────────────────────────────────────────────────
 
 _up_pg() {
@@ -224,6 +343,10 @@ _up_pg() {
   local pod="dev-pg-pod"
   local data="${DATA_ROOT}/${pod}"
   mkdir -p "${data}/postgres"
+
+  _preflight_images "${pod}" \
+    "docker.io/library/postgres:16-alpine" \
+    "docker.io/sosedoff/pgweb:latest"
 
   _ensure_pod "${pod}" "5432:5432" "8081:8081"
 
@@ -267,6 +390,10 @@ _up_mongo() {
   local pod="dev-mongo-pod"
   local data="${DATA_ROOT}/${pod}"
   mkdir -p "${data}/mongodb"
+
+  _preflight_images "${pod}" \
+    "docker.io/library/mongo:7" \
+    "docker.io/library/mongo-express:latest"
 
   _ensure_pod "${pod}" "27017:27017" "8082:8081"
 
@@ -327,6 +454,10 @@ _up_redis() {
   local data="${DATA_ROOT}/${pod}"
   mkdir -p "${data}/redis" "${data}/redisinsight"
 
+  _preflight_images "${pod}" \
+    "docker.io/library/redis:7-alpine" \
+    "docker.io/redis/redisinsight:latest"
+
   _ensure_pod "${pod}" "6379:6379" "8083:8001"
 
   # Redis
@@ -363,6 +494,8 @@ _up_mail() {
   section "dev-mail-pod  (Mailpit)"
   local pod="dev-mail-pod"
 
+  _preflight_images "${pod}" "docker.io/axllent/mailpit:latest"
+
   _ensure_pod "${pod}" "1025:1025" "8025:8025"
 
   if ! podman container exists "${pod}-mailpit" 2>/dev/null; then
@@ -382,6 +515,8 @@ _up_seq() {
   local pod="dev-seq-pod"
   local data="${DATA_ROOT}/${pod}"
   mkdir -p "${data}/seq"
+
+  _preflight_images "${pod}" "docker.io/datalust/seq:latest"
 
   _ensure_pod "${pod}" "5341:80"
 
@@ -404,6 +539,8 @@ _up_rmq() {
   local pod="dev-rmq-pod"
   local data="${DATA_ROOT}/${pod}"
   mkdir -p "${data}/rabbitmq"
+
+  _preflight_images "${pod}" "docker.io/library/rabbitmq:3-management-alpine"
 
   _ensure_pod "${pod}" "5672:5672" "15672:15672"
 
@@ -430,6 +567,8 @@ _up_nats() {
   local pod="dev-nats-pod"
   local data="${DATA_ROOT}/${pod}"
   mkdir -p "${data}/nats"
+
+  _preflight_images "${pod}" "docker.io/library/nats:2-alpine"
 
   _ensure_pod "${pod}" "4222:4222" "8222:8222" "6222:6222"
 
@@ -525,7 +664,7 @@ _status() {
 _usage() {
   cat <<EOF
 
-${C_BLD}${C_CYN}devpods${C_RST} v${DEVPODS_VERSION} — local dev infrastructure via Podman pods
+${C_BLD}${C_CYN}🦭 DevPods${C_RST} v${DEVPODS_VERSION} — Instant Local Infrastructure via Podman
 
 ${C_BLD}Usage:${C_RST}
   devpods [command] [pod|all]
@@ -558,33 +697,72 @@ ${C_BLD}Credentials:${C_RST} ~/.devpods/.env  (auto-created with defaults on fir
 EOF
 }
 
-# ─── summary card ─────────────────────────────────────────────────────────────
+# ─── summary card + cheatsheet file ──────────────────────────────────────────
 _summary() {
+  local cheatsheet="${DATA_ROOT}/cheatsheet.txt"
+
+  # ── plain-text version (written to file, no ANSI) ─────────────────────────
+  cat > "${cheatsheet}" <<CHEAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  devpods — Connection Cheatsheet
+  Generated: $(date '+%Y-%m-%d %H:%M:%S %Z')
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  SERVICE          CONNECTION
+  ─────────────────────────────────────────────────────────────
+  PostgreSQL       postgresql://${PG_USER}:${PG_PASS}@localhost:5432/${PG_DB}
+  pgweb            http://localhost:8081
+
+  MongoDB          mongodb://localhost:27017/?replicaSet=${MONGO_RS}
+  mongo-express    http://localhost:8082  (${ME_USER} / ${ME_PASS})
+
+  Redis            redis://:${REDIS_PASS}@localhost:6379
+  RedisInsight     http://localhost:8083
+
+  Mailpit SMTP     localhost:1025
+  Mailpit UI       http://localhost:8025
+
+  Seq              http://localhost:5341
+
+  RabbitMQ         amqp://${RMQ_USER}:${RMQ_PASS}@localhost:5672
+  RMQ Management   http://localhost:15672  (${RMQ_USER} / ${RMQ_PASS})
+
+  NATS             nats://localhost:4222
+  NATS Monitor     http://localhost:8222
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Credentials:  ~/.devpods/.env
+  Tear down:    bash devpods.sh down all
+  Status:       bash devpods.sh status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CHEAT
+
+  # ── coloured terminal version ─────────────────────────────────────────────
   echo -e "\n${C_BLD}${C_CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RST}"
   echo -e "${C_BLD}  devpods — Connection Cheatsheet${C_RST}"
   echo -e "${C_BLD}${C_CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RST}"
-  printf "  ${C_BLD}%-14s${C_RST} %s\n" "PostgreSQL"  "postgresql://${PG_USER}:${PG_PASS}@localhost:5432/${PG_DB}"
-  printf "  ${C_GRY}%-14s${C_RST} ${C_GRY}%s${C_RST}\n" "pgweb"       "http://localhost:8081"
-  printf "  ${C_BLD}%-14s${C_RST} %s\n" "MongoDB"     "mongodb://localhost:27017/?replicaSet=${MONGO_RS}"
-  printf "  ${C_GRY}%-14s${C_RST} ${C_GRY}%s${C_RST}\n" "mongo-express" "http://localhost:8082  (${ME_USER}/${ME_PASS})"
-  printf "  ${C_BLD}%-14s${C_RST} %s\n" "Redis"       "redis://:${REDIS_PASS}@localhost:6379"
-  printf "  ${C_GRY}%-14s${C_RST} ${C_GRY}%s${C_RST}\n" "RedisInsight" "http://localhost:8083"
-  printf "  ${C_BLD}%-14s${C_RST} %s\n" "Mailpit SMTP" "localhost:1025"
-  printf "  ${C_GRY}%-14s${C_RST} ${C_GRY}%s${C_RST}\n" "Mailpit UI"  "http://localhost:8025"
-  printf "  ${C_BLD}%-14s${C_RST} %s\n" "Seq"         "http://localhost:5341"
-  printf "  ${C_BLD}%-14s${C_RST} %s\n" "RabbitMQ"    "amqp://${RMQ_USER}:${RMQ_PASS}@localhost:5672"
-  printf "  ${C_GRY}%-14s${C_RST} ${C_GRY}%s${C_RST}\n" "RMQ Mgmt"   "http://localhost:15672  (${RMQ_USER}/${RMQ_PASS})"
-  printf "  ${C_BLD}%-14s${C_RST} %s\n" "NATS"        "nats://localhost:4222"
-  printf "  ${C_GRY}%-14s${C_RST} ${C_GRY}%s${C_RST}\n" "NATS Monitor" "http://localhost:8222"
+  printf "  ${C_BLD}%-16s${C_RST} %s\n"   "PostgreSQL"     "postgresql://${PG_USER}:${PG_PASS}@localhost:5432/${PG_DB}"
+  printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "pgweb"         "http://localhost:8081"
+  printf "  ${C_BLD}%-16s${C_RST} %s\n"   "MongoDB"        "mongodb://localhost:27017/?replicaSet=${MONGO_RS}"
+  printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "mongo-express" "http://localhost:8082  (${ME_USER} / ${ME_PASS})"
+  printf "  ${C_BLD}%-16s${C_RST} %s\n"   "Redis"          "redis://:${REDIS_PASS}@localhost:6379"
+  printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "RedisInsight"  "http://localhost:8083"
+  printf "  ${C_BLD}%-16s${C_RST} %s\n"   "Mailpit SMTP"   "localhost:1025"
+  printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "Mailpit UI"    "http://localhost:8025"
+  printf "  ${C_BLD}%-16s${C_RST} %s\n"   "Seq"            "http://localhost:5341"
+  printf "  ${C_BLD}%-16s${C_RST} %s\n"   "RabbitMQ"       "amqp://${RMQ_USER}:${RMQ_PASS}@localhost:5672"
+  printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "RMQ Mgmt"      "http://localhost:15672  (${RMQ_USER} / ${RMQ_PASS})"
+  printf "  ${C_BLD}%-16s${C_RST} %s\n"   "NATS"           "nats://localhost:4222"
+  printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "NATS Monitor"  "http://localhost:8222"
   echo -e "${C_BLD}${C_CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RST}"
-  echo -e "  ${C_GRY}Credentials live in: ~/.devpods/.env${C_RST}"
-  echo -e "  ${C_GRY}Tear down:  bash devpods.sh down all${C_RST}"
+  echo -e "  ${C_GRY}Saved: ${C_WHT}${cheatsheet}${C_RST}"
+  echo -e "  ${C_GRY}Tear down: bash devpods.sh down all${C_RST}"
   echo ""
 }
 
 # ─── entrypoint ───────────────────────────────────────────────────────────────
 main() {
-  banner "devpods v${DEVPODS_VERSION}"
+  banner "🦭 DevPods v${DEVPODS_VERSION}"
 
   local cmd="${1:-up}"
   local target="${2:-all}"

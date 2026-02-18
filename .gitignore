@@ -29,6 +29,9 @@ ehthumbs.db
 Desktop.ini
 $RECYCLE.BIN/
 
+# Node
+node_modules/
+
 # Editors
 .vscode/
 .idea/
@@ -60,3 +63,7 @@ logs/
 
 # Shell test artifacts
 /tmp/
+
+
+# Local backup files
+*.bak
