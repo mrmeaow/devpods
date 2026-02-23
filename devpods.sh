@@ -19,7 +19,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # ─── version ─────────────────────────────────────────────────────────────────
-DEVPODS_VERSION="1.2.0"
+DEVPODS_VERSION="1.4.0"
 
 # ─── colour palette ──────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -56,6 +56,8 @@ declare -A POD_PORTS=(
   [dev-seq-pod]="5341:80"
   [dev-rmq-pod]="5672:5672 15672:15672"
   [dev-nats-pod]="4222:4222 8222:8222 6222:6222"
+  [dev-sms-pod]="4000:4000 5153:5153"
+  [dev-minio-pod]="9000:9000 9001:9001"
 )
 
 # alias → pod name
@@ -67,9 +69,11 @@ declare -A ALIAS_MAP=(
   [seq]=dev-seq-pod
   [rmq]=dev-rmq-pod      [rabbitmq]=dev-rmq-pod
   [nats]=dev-nats-pod
+  [sms]=dev-sms-pod      [devsms]=dev-sms-pod
+  [minio]=dev-minio-pod
 )
 
-ALL_PODS=(dev-pg-pod dev-mongo-pod dev-redis-pod dev-mail-pod dev-seq-pod dev-rmq-pod dev-nats-pod)
+ALL_PODS=(dev-pg-pod dev-mongo-pod dev-redis-pod dev-mail-pod dev-seq-pod dev-rmq-pod dev-nats-pod dev-sms-pod dev-minio-pod)
 
 # ─── env / credentials (override via ~/.devpods/.env) ────────────────────────
 _load_env() {
@@ -83,6 +87,9 @@ _load_env() {
   MONGO_RS="${MONGO_RS:-rs0}"
   ME_USER="${ME_USER:-admin}"
   ME_PASS="${ME_PASS:-admin}"
+  MINIO_ROOT_USER="${MINIO_ROOT_USER:-devminio}"
+  MINIO_ROOT_PASS="${MINIO_ROOT_PASS:-devminio123}"
+  MINIO_BUCKET="${MINIO_BUCKET:-devsms}"
 }
 
 # ─── system readiness checks ──────────────────────────────────────────────────
@@ -155,6 +162,9 @@ RMQ_PASS=devpass
 MONGO_RS=rs0
 ME_USER=admin
 ME_PASS=admin
+MINIO_ROOT_USER=devminio
+MINIO_ROOT_PASS=devminio123
+MINIO_BUCKET=devsms
 ENV
     ok "Created ${DATA_ROOT}/.env (defaults)"
   fi
@@ -606,6 +616,55 @@ NATSCONF
   fi
 }
 
+_up_sms() {
+  section "dev-sms-pod  (devsms)"
+  local pod="dev-sms-pod"
+  local data="${DATA_ROOT}/${pod}"
+  mkdir -p "${data}/devsms"
+
+  _preflight_images "${pod}" "ghcr.io/mrmeaow/devsms:latest"
+
+  _ensure_pod "${pod}" "4000:4000" "5153:5153"
+
+  if ! podman container exists "${pod}-devsms" 2>/dev/null; then
+    info "Starting devsms …"
+    podman run -d \
+      --pod "${pod}" \
+      --name "${pod}-devsms" \
+      -v "${data}/devsms:/app/data:Z" \
+      ghcr.io/mrmeaow/devsms:latest >/dev/null
+    ok "devsms started → API: http://localhost:4000  UI: http://localhost:5153"
+  else
+    dim "devsms container already exists."
+  fi
+}
+
+_up_minio() {
+  section "dev-minio-pod  (MinIO)"
+  local pod="dev-minio-pod"
+  local data="${DATA_ROOT}/${pod}"
+  mkdir -p "${data}/minio"
+
+  _preflight_images "${pod}" "docker.io/minio/minio:latest"
+
+  _ensure_pod "${pod}" "9000:9000" "9001:9001"
+
+  if ! podman container exists "${pod}-minio" 2>/dev/null; then
+    info "Starting MinIO …"
+    podman run -d \
+      --pod "${pod}" \
+      --name "${pod}-minio" \
+      -e MINIO_ROOT_USER="${MINIO_ROOT_USER}" \
+      -e MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASS}" \
+      -v "${data}/minio:/data:Z" \
+      docker.io/minio/minio:latest \
+      server /data --console-address ":9001" >/dev/null
+    ok "MinIO started → API: http://localhost:9000  Console: http://localhost:9001"
+  else
+    dim "MinIO container already exists."
+  fi
+}
+
 # ─── pod name resolver ────────────────────────────────────────────────────────
 _resolve_pods() {
   local input="$1"
@@ -628,6 +687,8 @@ _launch_pod() {
     dev-seq-pod)   _up_seq   ;;
     dev-rmq-pod)   _up_rmq   ;;
     dev-nats-pod)  _up_nats  ;;
+    dev-sms-pod)   _up_sms   ;;
+    dev-minio-pod) _up_minio ;;
     *) die "No launcher for pod '${pod}'" ;;
   esac
 }
@@ -646,6 +707,8 @@ _status() {
     [dev-seq-pod]="http://localhost:5341"
     [dev-rmq-pod]="amqp://localhost:5672  UI→http://localhost:15672"
     [dev-nats-pod]="nats://localhost:4222  monitor→http://localhost:8222"
+    [dev-sms-pod]="devsms API→:4000  UI→:5153"
+    [dev-minio-pod]="MinIO API→:9000  Console→:9001"
   )
 
   for pod in "${ALL_PODS[@]}"; do
@@ -688,6 +751,8 @@ ${C_BLD}Pod aliases:${C_RST}
   seq      → dev-seq-pod     (Seq)
   rmq      → dev-rmq-pod     (RabbitMQ)
   nats     → dev-nats-pod    (NATS + JetStream)
+  sms      → dev-sms-pod     (devsms)
+  minio    → dev-minio-pod   (MinIO)
 
 ${C_BLD}One-liner (curl | bash):${C_RST}
   curl -fsSL https://gist.githubusercontent.com/<you>/devpods.sh/raw | bash
@@ -734,6 +799,12 @@ _summary() {
   NATS             nats://localhost:4222
   NATS Monitor     http://localhost:8222
 
+  devsms API       http://localhost:4000
+  devsms UI        http://localhost:5153
+
+  MinIO API        http://localhost:9000
+  MinIO Console    http://localhost:9001  (${MINIO_ROOT_USER} / ${MINIO_ROOT_PASS})
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   Credentials:  ~/.devpods/.env
   Tear down:    bash devpods.sh down all
@@ -758,6 +829,10 @@ CHEAT
   printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "RMQ Mgmt"      "http://localhost:15672  (${RMQ_USER} / ${RMQ_PASS})"
   printf "  ${C_BLD}%-16s${C_RST} %s\n"   "NATS"           "nats://localhost:4222"
   printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "NATS Monitor"  "http://localhost:8222"
+  printf "  ${C_BLD}%-16s${C_RST} %s\n"   "devsms API"     "http://localhost:4000"
+  printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "devsms UI"      "http://localhost:5153"
+  printf "  ${C_BLD}%-16s${C_RST} %s\n"   "MinIO API"      "http://localhost:9000"
+  printf "  ${C_GRY}%-16s${C_RST} ${C_GRY}%s${C_RST}\n" "MinIO Console" "http://localhost:9001  (${MINIO_ROOT_USER} / ${MINIO_ROOT_PASS})"
   echo -e "${C_BLD}${C_CYN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${C_RST}"
   echo -e "  ${C_GRY}Saved: ${C_WHT}${cheatsheet}${C_RST}"
   echo -e "  ${C_GRY}Tear down: bash devpods.sh down all${C_RST}"

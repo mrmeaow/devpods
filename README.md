@@ -19,6 +19,8 @@ curl -fsSL https://raw.githubusercontent.com/mrmeaow/devpods/main/devpods.sh | b
 | `dev-seq-pod`   | Seq                                     | Ingest + UI → `5341`       | [Guide](./docs/seq.md)      |
 | `dev-rmq-pod`   | RabbitMQ 3 (management)                 | AMQP `5672` · UI → `15672` | [Guide](./docs/rabbitmq.md) |
 | `dev-nats-pod`  | NATS 2 + JetStream                      | `4222` · Monitor → `8222`  | [Guide](./docs/nats.md)     |
+| `dev-sms-pod`   | devsms                                  | `4000` · `5153`            | [Guide](./docs/devsms.md)   |
+| `dev-minio-pod` | MinIO                                   | `9000` · `9001`            | [Guide](./docs/minio.md)    |
 
 All persistent data lives in **`~/.devpods/<pod-name>/`** — fully isolated from your project.
 
@@ -78,6 +80,8 @@ mail / mailpit     → dev-mail-pod
 seq                → dev-seq-pod
 rmq / rabbitmq     → dev-rmq-pod
 nats               → dev-nats-pod
+sms / devsms      → dev-sms-pod
+minio             → dev-minio-pod
 all                → every pod above
 ```
 
@@ -117,6 +121,11 @@ RMQ Mgmt     http://localhost:15672  (devuser / devpass)
 
 NATS         nats://localhost:4222
 NATS Monitor  http://localhost:8222
+
+devsms API   http://localhost:4000
+devsms UI    http://localhost:5153
+MinIO API    http://localhost:9000
+MinIO Console http://localhost:9001
 ```
 
 ---
@@ -136,6 +145,9 @@ RMQ_PASS=devpass
 MONGO_RS=rs0
 ME_USER=admin
 ME_PASS=admin
+MINIO_ROOT_USER=devminio
+MINIO_ROOT_PASS=devminio123
+MINIO_BUCKET=devsms
 ```
 
 Edit that file to override anything. It is **never** committed — it lives only on your machine.
@@ -192,6 +204,12 @@ podman exec -it dev-mongo-pod-mongodb mongosh --eval "rs.status()"
 
 # Inspect all pods
 podman pod ps
+
+# MinIO health
+curl -I http://localhost:9000/minio/health/live
+
+# devsms logs
+podman logs -f dev-sms-pod-devsms
 ```
 
 ---
