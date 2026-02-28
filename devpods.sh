@@ -4,7 +4,6 @@
 #  Gist: https://gist.github.com/<you>/devpods.sh
 #
 #  Usage (one-liner):
-#    curl -fsSL https://gist.githubusercontent.com/<you>/devpods.sh/raw | bash
 #    curl -fsSL https://gist.githubusercontent.com/<you>/devpods.sh/raw | bash -s -- up pg
 #    curl -fsSL https://gist.githubusercontent.com/<you>/devpods.sh/raw | bash -s -- down all
 #    curl -fsSL https://gist.githubusercontent.com/<you>/devpods.sh/raw | bash -s -- status
@@ -19,7 +18,7 @@ set -euo pipefail
 IFS=$'\n\t'
 
 # ─── version ─────────────────────────────────────────────────────────────────
-DEVPODS_VERSION="1.4.0"
+DEVPODS_VERSION="1.5.1"
 
 # ─── colour palette ──────────────────────────────────────────────────────────
 if [[ -t 1 ]]; then
@@ -413,10 +412,11 @@ _up_mongo() {
     podman run -d \
       --pod "${pod}" \
       --name "${pod}-mongodb" \
+      --user 999:999 \
       --health-cmd "mongosh --quiet --eval \"db.adminCommand('ping').ok\" | grep -q 1" \
       --health-interval 5s \
       --health-retries 15 \
-      -v "${data}/mongodb:/data/db:Z" \
+      -v "${data}/mongodb:/data/db:Z,U" \
       docker.io/library/mongo:7 \
       --replSet "${MONGO_RS}" --bind_ip_all >/dev/null
     ok "MongoDB container started."
@@ -667,14 +667,32 @@ _up_minio() {
 
 # ─── pod name resolver ────────────────────────────────────────────────────────
 _resolve_pods() {
-  local input="$1"
-  if [[ "${input}" == "all" ]]; then
-    echo "${ALL_PODS[@]}"
-    return
-  fi
-  local resolved="${ALIAS_MAP[${input}]:-}"
-  [[ -z "${resolved}" ]] && die "Unknown pod alias '${input}'. Valid: ${!ALIAS_MAP[*]} all"
-  echo "${resolved}"
+  local requested=("$@")
+  local resolved=()
+  local seen=" "
+
+  (( ${#requested[@]} == 0 )) && die "No pod target provided. Example: devpods up pg"
+
+  for input in "${requested[@]}"; do
+    if [[ "${input}" == "all" ]]; then
+      for pod in "${ALL_PODS[@]}"; do
+        [[ "${seen}" == *" ${pod} "* ]] || {
+          resolved+=("${pod}")
+          seen+="${pod} "
+        }
+      done
+      continue
+    fi
+
+    local pod_name="${ALIAS_MAP[${input}]:-}"
+    [[ -z "${pod_name}" ]] && die "Unknown pod alias '${input}'. Valid: ${!ALIAS_MAP[*]} all"
+    [[ "${seen}" == *" ${pod_name} "* ]] || {
+      resolved+=("${pod_name}")
+      seen+="${pod_name} "
+    }
+  done
+
+  echo "${resolved[@]}"
 }
 
 _launch_pod() {
@@ -734,12 +752,12 @@ _usage() {
 ${C_BLD}${C_CYN}🦭 DevPods${C_RST} v${DEVPODS_VERSION} — Instant Local Infrastructure via Podman
 
 ${C_BLD}Usage:${C_RST}
-  devpods [command] [pod|all]
+  devpods <command> [pod ... | all]
 
 ${C_BLD}Commands:${C_RST}
-  up     [pod|all]    Start pod(s)              (default: all)
-  down   [pod|all]    Stop and remove pod(s)
-  reset  [pod|all]    Stop + wipe data for pod(s)
+  up     [pod ...|all] Start pod(s)             (explicit target required)
+  down   [pod ...|all] Stop and remove pod(s)
+  reset  [pod ...|all] Stop + wipe data for pod(s)
   status              Show state of all pods
   help                This message
 
@@ -755,7 +773,6 @@ ${C_BLD}Pod aliases:${C_RST}
   minio    → dev-minio-pod   (MinIO)
 
 ${C_BLD}One-liner (curl | bash):${C_RST}
-  curl -fsSL https://gist.githubusercontent.com/<you>/devpods.sh/raw | bash
   curl -fsSL https://gist.githubusercontent.com/<you>/devpods.sh/raw | bash -s -- up pg
   curl -fsSL https://gist.githubusercontent.com/<you>/devpods.sh/raw | bash -s -- down all
   curl -fsSL https://gist.githubusercontent.com/<you>/devpods.sh/raw | bash -s -- status
@@ -843,8 +860,14 @@ CHEAT
 main() {
   banner "🦭 DevPods v${DEVPODS_VERSION}"
 
-  local cmd="${1:-up}"
-  local target="${2:-all}"
+  local cmd="${1:-help}"
+
+  case "${cmd}" in
+    help|--help|-h)
+      _usage
+      return 0
+      ;;
+  esac
 
   _check_system
   _load_env
@@ -852,14 +875,14 @@ main() {
   case "${cmd}" in
     up)
       local pods
-      IFS=' ' read -ra pods <<< "$(_resolve_pods "${target}")"
+      IFS=' ' read -ra pods <<< "$(_resolve_pods "${@:2}")"
       for p in "${pods[@]}"; do _launch_pod "${p}"; done
       _summary
       ;;
     down)
       section "Stopping pods"
       local pods
-      IFS=' ' read -ra pods <<< "$(_resolve_pods "${target}")"
+      IFS=' ' read -ra pods <<< "$(_resolve_pods "${@:2}")"
       for p in "${pods[@]}"; do _stop_pod "${p}"; done
       ok "Done."
       ;;
@@ -868,15 +891,12 @@ main() {
       warn "This will DELETE all data for the selected pod(s). Ctrl-C to abort …"
       sleep 3
       local pods
-      IFS=' ' read -ra pods <<< "$(_resolve_pods "${target}")"
+      IFS=' ' read -ra pods <<< "$(_resolve_pods "${@:2}")"
       for p in "${pods[@]}"; do _reset_pod "${p}"; done
       ok "Reset complete. Re-run 'up' to recreate."
       ;;
     status)
       _status
-      ;;
-    help|--help|-h)
-      _usage
       ;;
     *)
       err "Unknown command: ${cmd}"
