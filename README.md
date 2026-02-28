@@ -3,7 +3,7 @@
 > Local dev infrastructure in isolated **Podman pods** — one script, zero Docker Desktop, zero compose files.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mrmeaow/devpods/main/devpods.sh | bash
+curl -fsSL https://raw.githubusercontent.com/mrmeaow/devpods/main/devpods.sh | bash -s -- up pg
 ```
 
 ---
@@ -40,13 +40,14 @@ No Docker. No Docker Desktop. No `sudo`.
 
 ## Usage
 
-### Quickstart — boot everything
+### Quickstart — start only what you need
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mrmeaow/devpods/main/devpods.sh | bash
+# explicit target required
+curl -fsSL https://raw.githubusercontent.com/mrmeaow/devpods/main/devpods.sh | bash -s -- up pg
 ```
 
-### Run a single pod
+### Run one or more pods
 
 ```bash
 # via curl
@@ -59,14 +60,14 @@ bash devpods.sh up mongo
 ### All commands
 
 ```
-bash devpods.sh <command> [pod|all]
+bash devpods.sh <command> [pod ... | all]
 ```
 
 | Command            | Description                               |
 | ------------------ | ----------------------------------------- |
-| `up [pod\|all]`    | Start pod(s) — idempotent, safe to re-run |
-| `down [pod\|all]`  | Stop and remove pod(s)                    |
-| `reset [pod\|all]` | Stop pod(s) **and delete all data**       |
+| `up [pod ...\|all]` | Start selected pod(s) — idempotent, safe to re-run |
+| `down [pod ...\|all]` | Stop and remove selected pod(s)             |
+| `reset [pod ...\|all]` | Stop selected pod(s) **and delete all data** |
 | `status`           | Show state + endpoints for every pod      |
 | `help`             | Print usage                               |
 
@@ -89,13 +90,24 @@ all                → every pod above
 
 ```bash
 bash devpods.sh up all          # boot everything
-bash devpods.sh up pg mongo     # not supported yet — run separately
+bash devpods.sh up pg mongo     # start only Postgres + MongoDB
 bash devpods.sh down redis      # stop Redis pod only
 bash devpods.sh reset mongo     # wipe MongoDB data and stop
 bash devpods.sh status          # pretty status table
 ```
 
 ---
+
+
+## Fedora / SELinux compatibility
+
+The SELinux/rootless issue we observed is addressed for MongoDB specifically: its data mount uses `:Z,U` and the container runs as the `mongodb` user (`--user 999:999`).
+
+This avoids rootless entrypoint ownership errors like:
+
+```
+chown: changing ownership of "/proc/1/fd/2": Permission denied
+```
 
 ## Connection strings
 
